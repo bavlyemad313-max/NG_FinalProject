@@ -4,6 +4,7 @@ Vodafone Cash & InstaPay Protection Platform
 Streamlit Web Application
 """
 import os
+import math
 import joblib
 import pandas as pd
 import numpy as np
@@ -131,7 +132,7 @@ def safe_predict_proba(model, feat_df):
 
     return None
 
-# Robust Prediction Function with FinTech Domain Rules
+# Robust Prediction Function with Dynamic Discrepancy Risk Scaling
 def predict_single_transaction(tx_dict, threshold=0.35):
     amt = float(tx_dict['amount'])
     old_orig = float(tx_dict['oldbalanceOrg'])
@@ -144,6 +145,11 @@ def predict_single_transaction(tx_dict, threshold=0.35):
     
     error_orig = new_orig + amt - old_orig
     error_dest = old_dest + amt - new_dest
+    
+    abs_orig_err = abs(error_orig)
+    abs_dest_err = abs(error_dest)
+    total_diff = abs_orig_err + abs_dest_err
+    
     amount_to_orig = amt / (old_orig + 1.0)
     is_emptied = 1 if (new_orig == 0 and amt > 0) else 0
     is_large_drain = 1 if (new_orig == 0 and amt >= 10000) else 0
@@ -156,14 +162,13 @@ def predict_single_transaction(tx_dict, threshold=0.35):
     
     reasons = []
     
-    # Domain Invariant 1: In mobile wallets, PAYMENT and CASH_IN are completely safe from P2P drain fraud
-    if is_payment or is_cash_in:
+    # Domain Invariant 1: In mobile wallets, verified PAYMENT and CASH_IN deposits with zero balance error are completely safe
+    if (is_payment or is_cash_in) and total_diff < 5.0 and not is_night:
         prob = 0.002
-        reasons.append("✅ سداد مشتريات تاجر معتمد أو إيداع نقدي سليم (فئة آمنة تماماً).")
-    # Domain Invariant 2: Small everyday transactions with normal balance updates (< 1500 EGP)
-    elif amt < 1500 and not is_night and abs(error_orig) < 1.0:
-        prob = 0.005
-        reasons.append("✅ معاملة مالية صغيرة متسقة مع الأنماط المعتادة للمدفوعات اليومية.")
+        reasons.append("✅ سداد مشتريات تاجر معتمد أو إيداع نقدي سليم ومطابق للأرصدة (فئة آمنة).")
+    elif amt < 1000 and not is_night and total_diff < 2.0:
+        prob = 0.008
+        reasons.append("✅ معاملة مالية صغيرة متسقة حسابياً مع الأنماط المعتادة للمدفوعات اليومية.")
         if is_emptied:
             reasons.append("ℹ️ سحب رصيد اعتيادي بمبلغ بسيط من منفذ خدمة.")
     else:
@@ -190,45 +195,57 @@ def predict_single_transaction(tx_dict, threshold=0.35):
         
         raw_prob = safe_predict_proba(models.get('best_model'), feat_values)
         if raw_prob is None:
-            raw_prob = 0.95 if (is_large_drain and is_night) else 0.05
+            raw_prob = 0.05
             
-        # FinTech Hybrid Intelligence (Rule + ML calibration)
-        drain_ratio = amt / (old_orig + 1.0)
+        # Base probability from ML model, calibrated for consistent legitimate daytime transactions
+        base_prob = raw_prob
+        if total_diff < 1.0 and not is_night and amt < 15000:
+            base_prob = min(raw_prob, 0.02)
+            
+        # -------------------------------------------------------------
+        # 📈 DYNAMIC CONTINUOUS DISCREPANCY BOOSTING (منحنى الخطر التصاعدي)
+        # كلما زاد فارق الأرصدة، تزيد نسبة الخطر تصاعدياً وتراكمياً بدون أي ثبات
+        # -------------------------------------------------------------
+        scale = 1200.0
+        if total_diff >= 1.0:
+            diff_factor = 1.0 - math.exp(- total_diff / scale)
+            prob = base_prob + (1.0 - base_prob) * diff_factor
+        else:
+            prob = base_prob
         
         # 1. Receiver balance did not increase after large transfer (Mule / Money vanished)
-        if amt >= 5000 and new_dest <= old_dest and tx_type in ['TRANSFER', 'CASH_OUT']:
-            raw_prob = max(raw_prob, 0.95)
-            reasons.append("⚠️ رصيد المستلم لم يزد إطلاقاً بعد التحويل (مؤشر قوي على أموال مفقودة أو حساب وسيط Mule).")
+        if amt >= 2000 and new_dest <= old_dest and tx_type in ['TRANSFER', 'CASH_OUT']:
+            mule_boost = 0.95 + 0.045 * (1.0 - math.exp(-amt / 5000.0))
+            prob = max(prob, mule_boost)
+            reasons.append("⚠️ رصيد المستلم لم يزد إطلاقاً بعد التحويل (مؤشر قطعي على أموال مفقودة أو حساب وسيط Mule).")
             
-        # 2. Major balance discrepancies
-        if abs(error_dest) >= 5000 or abs(error_orig) >= 500:
-            if is_night or amt >= 10000:
-                raw_prob = max(raw_prob, 0.97)
-            else:
-                raw_prob = max(raw_prob, 0.78)
-            reasons.append(f"⚠️ تناقض رياضي جسيم في أرصدة المعاملة (فارق رصيد المستلم: {error_dest:,.2f} جنيه / المرسل: {error_orig:,.2f} جنيه).")
-                
-        # 3. High balance drain at night (Phishing / Account Takeover)
-        if (is_large_drain or drain_ratio >= 0.85) and amt >= 10000 and is_night:
-            raw_prob = max(raw_prob, 0.97)
-            reasons.append(f"⚠️ استنزاف لمعظم رصيد المحفظة ({amt:,.2f} جنيه) في ساعات متأخرة من الليل (Phishing Drain).")
+        # 2. Account emptied (Wallet Drained)
+        if is_emptied and amt >= 2000:
+            prob = min(0.999, prob + 0.12 * (1.0 - prob))
+            reasons.append(f"⚠️ استنزاف وتصفير كامل لرصيد المحفظة ({amt:,.2f} جنيه) - نمط احتيال قسري (Phishing Drain).")
             
-        # 4. Legitimate daytime transaction with consistent balances
-        if abs(error_orig) < 1.0 and abs(error_dest) < 1.0 and not is_night and amt < 10000:
-            raw_prob = min(raw_prob, 0.02)
-            
-        prob = raw_prob
-            
-        # Explanations
-        if is_night and "توقيت" not in str(reasons):
+        # 3. Nocturnal timing (Late night)
+        if is_night and (total_diff >= 100 or amt >= 5000):
+            prob = min(0.999, prob + 0.08 * (1.0 - prob))
             reasons.append(f"🌙 توقيت المعاملة في ساعات الليل المتأخرة ({hour:02d}:00).")
+            
+        # 4. Detailed explanation of discrepancies in EGP
+        if abs_orig_err >= 1.0:
+            reasons.append(f"⚠️ تناقض حسابي في رصيد المرسل: فارق قدره {abs_orig_err:,.2f} جنيه (المخصوم لا يطابق المعاملة).")
+        if abs_dest_err >= 1.0:
+            reasons.append(f"⚠️ تناقض حسابي في رصيد المستلم: فارق قدره {abs_dest_err:,.2f} جنيه (المضاف للمستلم به عجز).")
+            
+        if total_diff >= 1.0 and "مؤشر تصاعدي" not in str(reasons):
+            reasons.append(f"📈 إجمالي التناقض الرياضي للأرصدة: {total_diff:,.2f} جنيه (أدى لرفع مؤشر الخطر تلقائياً بمقدار +{(1.0 - math.exp(- total_diff / 1400.0))*96.5:.1f}%).")
+            
         if amt >= 50000 and "ضخمة" not in str(reasons):
             reasons.append(f"💰 قيمة المعاملة ضخمة جداً ({amt:,.2f} جنيه) تتجاوز الحدود المعتادة للمحافظ.")
-        if not reasons:
-            reasons.append("✅ المعاملة متطابقة مع مؤشرات الأمان السليمة للمحفظة.")
+            
+        if total_diff < 1.0 and not reasons:
+            reasons.append("✅ الأرصدة متطابقة رياضياً بالكامل بدون أي عجز (فارق الأرصدة 0.00 جنيه).")
             
     is_fraud = bool(prob >= threshold)
-    return prob, is_fraud, reasons
+    return float(round(prob, 4)), is_fraud, reasons
 
 # ==========================================
 # VIEW 1: LIVE FRAUD SIMULATOR
@@ -366,6 +383,37 @@ if view_mode == "⚡ تجربة فحص معاملة فورية (Live Simulator)"
     st.markdown("---")
     st.markdown("### 📊 نتيجة الفحص الأمني والتحليل الفوري:")
     
+    # Live Balance Discrepancy Reconciliation Box
+    err_orig_val = new_orig + amount - old_orig
+    err_dest_val = old_dest + amount - new_dest
+    tot_diff_val = abs(err_orig_val) + abs(err_dest_val)
+    
+    with st.container(border=True):
+        st.markdown("##### 🧮 المطابقة الحسابية للأرصدة (Mathematical Balance Reconciliation)")
+        m_c1, m_c2, m_c3 = st.columns(3)
+        m_c1.metric(
+            "فارق حساب المرسل (Sender Discrepancy)",
+            f"{abs(err_orig_val):,.2f} ج.م",
+            delta="مطابق تماماً (0 ج.م)" if abs(err_orig_val) < 1.0 else f"عجز بقيمة {abs(err_orig_val):,.2f} ج.م",
+            delta_color="normal" if abs(err_orig_val) < 1.0 else "inverse"
+        )
+        m_c2.metric(
+            "فارق حساب المستلم (Receiver Discrepancy)",
+            f"{abs(err_dest_val):,.2f} ج.م",
+            delta="مطابق تماماً (0 ج.م)" if abs(err_dest_val) < 1.0 else f"عجز بقيمة {abs(err_dest_val):,.2f} ج.م",
+            delta_color="normal" if abs(err_dest_val) < 1.0 else "inverse"
+        )
+        m_c3.metric(
+            "إجمالي التناقض المالي (Total Discrepancy)",
+            f"{tot_diff_val:,.2f} ج.م",
+            delta="أرصدة متطابقة 100%" if tot_diff_val < 1.0 else f"رفع الخطر: +{(1.0 - math.exp(- tot_diff_val / 1400.0))*96.5:.1f}%",
+            delta_color="normal" if tot_diff_val < 1.0 else "inverse"
+        )
+        if tot_diff_val >= 1.0:
+            st.caption("💡 **خاصية التدرج الذكي:** كلما زاد فارق الأرصدة عن 0.00 جنيه، تزداد نسبة الخطر تصاعدياً وتلقائياً لحماية المحفظة من سحب الأموال المشبوهة.")
+        else:
+            st.caption("✅ **حالة سليمة:** لا يوجد أي عجز أو تناقض حسابي بين المبالغ المحولة والأرصدة.")
+    
     res_col1, res_col2 = st.columns([1, 1.4])
     
     with res_col1:
@@ -485,6 +533,13 @@ elif view_mode == "📁 فحص ملف معاملات مجمّع (Batch CSV Scann
                     probs = model.predict_proba(X_batch.values)[:, 1]
                 except Exception:
                     probs = np.where((df_scan['newbalanceDest'] <= df_scan['oldbalanceDest']) & (df_scan['amount'] >= 5000), 0.95, 0.05)
+            
+            # Incorporate dynamic continuous discrepancy scaling in batch scanner
+            tot_diff_batch = df_scan['error_orig'].abs() + df_scan['error_dest'].abs()
+            diff_risk_batch = np.where(tot_diff_batch >= 1.0, 0.015 + 0.965 * (1.0 - np.exp(- tot_diff_batch / 1400.0)), 0.015)
+            is_safe_type = df_scan['type'].isin(['PAYMENT', 'CASH_IN']) & (tot_diff_batch < 5.0)
+            probs = np.where(is_safe_type, 0.002, np.maximum(probs, diff_risk_batch))
+            
             df_scan['احتمالية_الاحتيال'] = np.round(probs * 100, 2)
             df_scan['قرار_النظام'] = np.where(probs >= 0.35, '🚨 احتيال محتمل', '🟢 معاملة آمنة')
             
