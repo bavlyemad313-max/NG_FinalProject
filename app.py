@@ -537,7 +537,13 @@ elif view_mode == "📁 فحص ملف معاملات مجمّع (Batch CSV Scann
             # Incorporate dynamic continuous discrepancy scaling in batch scanner
             tot_diff_batch = df_scan['error_orig'].abs() + df_scan['error_dest'].abs()
             diff_risk_batch = np.where(tot_diff_batch >= 1.0, 0.015 + 0.965 * (1.0 - np.exp(- tot_diff_batch / 1400.0)), 0.015)
-            is_safe_type = df_scan['type'].isin(['PAYMENT', 'CASH_IN']) & (tot_diff_batch < 5.0)
+            # Safe type check handling raw string column or one-hot encoded flags
+            if 'type' in df_scan.columns:
+                is_safe_type = df_scan['type'].isin(['PAYMENT', 'CASH_IN']) & (tot_diff_batch < 5.0)
+            elif 'is_payment' in df_scan.columns:
+                is_safe_type = ((df_scan['is_payment'] == 1) | (df_scan.get('is_cash_in', 0) == 1)) & (tot_diff_batch < 5.0)
+            else:
+                is_safe_type = pd.Series(False, index=df_scan.index)
             probs = np.where(is_safe_type, 0.002, np.maximum(probs, diff_risk_batch))
             
             df_scan['احتمالية_الاحتيال'] = np.round(probs * 100, 2)
