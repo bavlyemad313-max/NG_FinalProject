@@ -10,7 +10,7 @@
 ---
 
 ## 🌐 Live Web Application & Interactive Experience (تجربة المشروع)
-- **Live Interactive App:** [PayGuard Fraud Detection Engine](https://ng-finalproject.streamlit.app)
+- **Live Interactive App:** [PayGuard Fraud Detection Engine](https://ngfinalproject-wu4opffnkutnqvpbd6aamm.streamlit.app/)
 - **GitHub Repository:** [bavlyemad313-max/NG_FinalProject](https://github.com/bavlyemad313-max/NG_FinalProject)
 - **Core Interactive Features:**
   - **1. Live Transaction Simulator:** Enter transaction details (Vodafone Cash / InstaPay, transfer amount, sender & receiver balances, time of day) or choose 1-click realistic scenarios to get an instant Fraud Risk Score (0-100%), automated security decision (Approved / Step-Up Auth / Blocked), and AI root-cause explainability.
@@ -146,7 +146,7 @@ Fraud represents less than 1% of transactions. A naive model predicting "Not Fra
 🔍 Biggest Takeaway:
 In imbalanced FinTech data, accuracy is misleading — PR-AUC and financial cost matrices are what truly protect company margin and customer trust.
 
-🔗 Try the Live App: https://ng-finalproject.streamlit.app
+🔗 Try the Live App: https://ngfinalproject-wu4opffnkutnqvpbd6aamm.streamlit.app/
 💻 GitHub Repository: https://github.com/bavlyemad313-max/NG_FinalProject
 
 Special thanks to NextGen Institute and our instructors for the continuous mentorship! 💜
