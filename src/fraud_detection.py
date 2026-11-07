@@ -39,7 +39,7 @@ def run_5_fold_stratified_cv(X, y):
     zero overfitting (measuring train vs validation gap) and zero underfitting.
     """
     print("\n" + "="*70)
-    print("🔄 EXECUTING 5-FOLD STRATIFIED CROSS-VALIDATION (OVERFITTING CHECK)")
+    print("[*] EXECUTING 5-FOLD STRATIFIED CROSS-VALIDATION (OVERFITTING CHECK)")
     print("="*70)
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_records = []
